@@ -1,11 +1,14 @@
-# TFGManuelFelipe
-**Titulo:** Sistema HW/SW para generar datasets de objetos físicos para entrenar CNN
+# Sistema HW/SW para generar datasets de objetos físicos para entrenar CNN
 
 **Descripción:** Se propone diseñar un sistema HW/SW para la elaboración de un dataset para el posterior entrenamiento de una red neuronal convolucional. Este sistema deberá comprender una parte hardware, la cual debe tener una cámara para tomar las fotografías y una parte software para realizar el proceso de captación de imágenes y etiquetado. Con dicho software, se hará una clasificación manual según categoría, por parte del usuario usando el software desarrollado.
 
 **Objetivos:** El objetivo de este TFG es realizar una aplicación universal para realizar datasets de objetos físicos.
 
-**Tutor:** Canas Moreno, Salvador
+**Tutor:** Jose Antonio Diaz Navarro
+
+**Cotutor:** Salvador Canas Moreno
+
+**Departamento:** Arquitectura y Tecnología de Computadores
 
 # Segment Anything Model con Label Studio ML Backend
 
@@ -37,7 +40,7 @@ docker build . -t sam:latest
 ```
 En verdad puedes ponerle cualquier nombre.
 
-### Debemos verificar que la imagen se ha creado, debe aparecer algo parecido a esto
+### Debemos verificar que la imagen se ha creado, debe aparecer algo parecido a esto:
 ```bash 
 REPOSITORY                 TAG       IMAGE ID       CREATED       SIZE
 humansignal/sam            v0        5f49434f8a86   2 weeks ago   4.62GB
@@ -61,4 +64,19 @@ Este comando le indica a Docker que lance Label Studio, lo haga disponible para 
 
 # Problemas Mac
 
+**Portátil con estas carecterísticas:**
+
+```bash
+Chip: Apple M1 Pro
+Memoria: 16 GB 
+Disco de Arranque: Macintosh HD
+macOS: Sonoma 14.1.1
+``````
+Único problema que tuvimos durante la instalación fue resuelto en el siguiente enlace: 
+
+```bash
+https://github.com/docker/for-mac/issues/3785
+``````
+
 # Problemas Windows
+**Portátil con estas carecterísticas:**
