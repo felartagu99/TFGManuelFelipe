@@ -87,9 +87,5 @@ Memoria: 16 GB
 Gráfica: Nvidia Geforce RTX
 windows: 11 Home 22H2
 ``````
-El procedimiento a seguir es exactamente igual que el descrito previamente para macOs. Solamente existe un pequeño problema con el retorno de carro. Los archivos vienen solo con el salto de linea (LF) y hay que añadirle el retorno de carro (CRLF):
-```bash
-![image](https://github.com/felartagu99/TFGManuelFelipe/assets/130736912/a8a0ec83-0f45-4c5b-a371-1ab22100ae1c)
+El procedimiento a seguir es exactamente igual que el descrito previamente para macOs. Solamente existe un pequeño problema con el retorno de carro. Los archivos vienen solo con el salto de linea (LF) y hay que añadirle el retorno de carro (CRLF)
 
-
-```
