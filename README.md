@@ -89,3 +89,30 @@ windows: 11 Home 22H2
 ``````
 El procedimiento a seguir es exactamente igual que el descrito previamente para macOs. Solamente existe un pequeño problema con el retorno de carro. Los archivos vienen solo con el salto de linea (LF) y hay que añadirle el retorno de carro (CRLF)
 
+# Despliegue de Label Studio 
+**Una vez hemos instalado todo lo que hemos comentado anteriormente debemos seguir  los siguientes pasos para lanzar la aplicación**
+
+Lanzamos el contenedor con el siguiente comando y tendremos el label studio disponible en el puerto 8080
+
+```bash
+docker run -it -p 8080:8080 \
+    -v $(pwd)/mydata:/label-studio/data \
+    --env LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true \
+    --env LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT=/label-studio/data/images \
+    heartexlabs/label-studio:latest
+````
+Una vez se crea el proyecto con la configuraciones necesarias necesitamos lanzar el SAM y relacionarlo con nuestro proyecto para poder empezar con el etiquetado de imágenes.
+
+Cogemos un token necesario para poder identificarnos con la API de label studio y la añadimos al archivo docker-compose.yml. Utilizando los siguientes comandos ya terminaríamos de activar el algoritmo SAM para nuestro proyecto.
+
+```bash
+docker compose up
+
+[+] Running 1/0
+ ✔ Container server  Recreated                                                                                                          0.0s 
+Attaching to server
+server  | [2023-08-23 03:40:23,575] [DEBUG] [sam_predictor::__init__::33] Using device cpu
+server  | [2023-08-23 03:40:23,689] [INFO] [sam_predictor::__init__::65] Using MobileSAM checkpoint /app/models/mobile_sam.pt
+````
+
+
