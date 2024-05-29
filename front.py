@@ -1,4 +1,5 @@
 import os
+import shutil
 import sys
 import cv2
 import numpy as np
@@ -7,113 +8,111 @@ import torch
 import supervision as sv
 from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QVBoxLayout, QHBoxLayout, 
-                             QPushButton, QMessageBox, QComboBox, QFileDialog, QInputDialog, QDialog)
+                             QPushButton, QMessageBox, QComboBox, QFileDialog, QInputDialog, QDialog, QProgressBar)
 from PyQt5.QtGui import QPixmap, QImage, QFont
 from PyQt5.QtCore import Qt, QTimer
-from segment_anything import SamPredictor, sam_model_registry
+#from segment_anything import SamPredictor, sam_model_registry
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 
-#from groundingdino import predict, annotate
-#from groundingdino.util.inference import load_image
+from groundingdino.util.inference import load_model, load_image, predict, annotate
 
-
+#Funciones aux para poder crear directorios y generar nombres con id
 def create_dir(path):
     if not os.path.exists(path):
         os.makedirs(path)
-        
-def save_mask_debug(masks, save_dir):
-    os.makedirs(save_dir, exist_ok=True)
-    for idx, mask in enumerate(masks):
-        mask = (mask * 255).astype(np.uint8)
-        mask_path = os.path.join(save_dir, f"debug_mask_{idx}.png")
-        cv2.imwrite(mask_path, mask)
-        print(f"Mask {idx} saved to {mask_path}")
 
-def invert_mask(mask):
-    return 1 - mask
 
-def save_mask_pixels(masks, save_dir):
-    os.makedirs(save_dir, exist_ok=True)
-    for idx, mask in enumerate(masks):
-        mask = (mask * 255).astype(np.uint8)
-        mask_path = os.path.join(save_dir, f"mask_{idx}.png")
-        cv2.imwrite(mask_path, mask)
+def get_next_id(directory, base_name, extension):
+    existing_files = [f for f in os.listdir(directory) if f.startswith(base_name) and f.endswith(extension)]
+    if not existing_files:
+        return 1
+    existing_ids = [int(f[len(base_name)+1:-len(extension)]) for f in existing_files if f[len(base_name)+1:-len(extension)].isdigit()]
+    return max(existing_ids, default=0) + 1
 
-def mask_to_bboxes(mask):
-    mask = (mask * 255).astype(np.uint8)
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    bboxes = []
-    for contour in contours:
-        if cv2.contourArea(contour) > 0:  # Filtra contornos pequeños
-            x, y, w, h = cv2.boundingRect(contour)
-            bboxes.append((x, y, x + w, y + h))
-    return bboxes
-
-def crop_image_to_size(image, width_mm, height_mm, ppi=300):
-        #Esta función se hace por el tema de la bandeja, para que no se pueda exceder de tamaño
-        width_inch = width_mm / 25.4
-        height_inch = height_mm / 25.4
-        width_px = int(width_inch * ppi)
-        height_px = int(height_inch * ppi)
-        
-        # Calcula las coordenadas del recorte
-        center_x, center_y = image.shape[1] // 2, image.shape[0] // 2
-        x1 = max(center_x - width_px // 2, 0)
-        y1 = max(center_y - height_px // 2, 0)
-        x2 = min(center_x + width_px // 2, image.shape[1])
-        y2 = min(center_y + height_px // 2, image.shape[0])
-
-        return image[y1:y2, x1:x2]
-
-def export_to_pascal_voc(image_path, labels, bboxes):
-    import xml.etree.ElementTree as ET
-    from xml.dom import minidom
-
+def export_to_pascal_voc_annotations(image_path, boxes, phrases, output_dir, labels):
     image = cv2.imread(image_path)
     height, width, depth = image.shape
 
-    annotation = ET.Element("annotation")
-    ET.SubElement(annotation, "folder").text = "images"
-    ET.SubElement(annotation, "filename").text = os.path.basename(image_path)
-    ET.SubElement(annotation, "path").text = image_path
+    # Crear el elemento raíz del XML
+    annotation = ET.Element('annotation')
 
-    source = ET.SubElement(annotation, "source")
-    ET.SubElement(source, "database").text = "Unknown"
+    # Sub-elementos básicos
+    folder = ET.SubElement(annotation, 'folder')
+    folder.text = os.path.basename(output_dir)
 
-    size = ET.SubElement(annotation, "size")
-    ET.SubElement(size, "width").text = str(width)
-    ET.SubElement(size, "height").text = str(height)
-    ET.SubElement(size, "depth").text = str(depth)
+    filename = ET.SubElement(annotation, 'filename')
+    filename.text = os.path.basename(image_path)
 
-    ET.SubElement(annotation, "segmented").text = "0"
+    path = ET.SubElement(annotation, 'path')
+    path.text = image_path
 
-    for bbox, label in zip(bboxes, labels):
-        x1, y1, x2, y2 = bbox
-        obj = ET.SubElement(annotation, "object")
-        ET.SubElement(obj, "name").text = label
-        ET.SubElement(obj, "pose").text = "Unspecified"
-        ET.SubElement(obj, "truncated").text = "0"
-        ET.SubElement(obj, "difficult").text = "0"
-        bndbox = ET.SubElement(obj, "bndbox")
-        ET.SubElement(bndbox, "xmin").text = str(int(x1))
-        ET.SubElement(bndbox, "ymin").text = str(int(y1))
-        ET.SubElement(bndbox, "xmax").text = str(int(x2))
-        ET.SubElement(bndbox, "ymax").text = str(int(y2))
+    source = ET.SubElement(annotation, 'source')
+    database = ET.SubElement(source, 'database')
+    database.text = 'Unknown'
 
-    xml_str = ET.tostring(annotation, encoding="utf-8")
-    xml_str = minidom.parseString(xml_str).toprettyxml(indent="  ")
+    size = ET.SubElement(annotation, 'size')
+    width_el = ET.SubElement(size, 'width')
+    width_el.text = str(width)
+    height_el = ET.SubElement(size, 'height')
+    height_el.text = str(height)
+    depth_el = ET.SubElement(size, 'depth')
+    depth_el.text = str(depth)
 
-    output_path = os.path.splitext(image_path)[0] + ".xml"
-    with open(output_path, "w") as f:
-        f.write(xml_str)
+    segmented = ET.SubElement(annotation, 'segmented')
+    segmented.text = '0'
 
-    print(f"Pascal VOC annotation saved to {output_path}")
-        
-def export_to_coco(image_path, labels, bboxes):
+    # Sub-elementos para cada objeto
+    for box, phrase in zip(boxes, phrases):
+        if phrase in labels:
+            x_min, y_min, x_max, y_max = box
+            x_min = int(x_min * width)
+            y_min = int(y_min * height)
+            x_max = int(x_max * width)
+            y_max = int(y_max * height)
 
+            obj = ET.SubElement(annotation, 'object')
+
+            name = ET.SubElement(obj, 'name')
+            name.text = phrase
+
+            pose = ET.SubElement(obj, 'pose')
+            pose.text = 'Unspecified'
+
+            truncated = ET.SubElement(obj, 'truncated')
+            truncated.text = '0'
+
+            difficult = ET.SubElement(obj, 'difficult')
+            difficult.text = '0'
+
+            bndbox = ET.SubElement(obj, 'bndbox')
+            xmin = ET.SubElement(bndbox, 'xmin')
+            xmin.text = str(x_min)
+            ymin = ET.SubElement(bndbox, 'ymin')
+            ymin.text = str(y_min)
+            xmax = ET.SubElement(bndbox, 'xmax')
+            xmax.text = str(x_max)
+            ymax = ET.SubElement(bndbox, 'ymax')
+            ymax.text = str(y_max)
+
+    xml_str = ET.tostring(annotation, encoding='utf-8')
+    xml_pretty_str = minidom.parseString(xml_str).toprettyxml(indent='    ')
+
+    # Obtener el siguiente ID para el archivo XML
+    xml_id = get_next_id(output_dir, "annotated_image", ".xml")
+    annotation_file_path = os.path.join(output_dir, f"annotated_image_{xml_id}.xml")
+
+    # Guardar el archivo XML
+    with open(annotation_file_path, 'w') as f:
+        f.write(xml_pretty_str)
+    print(f"Anotaciones Pascal VOC guardadas en: {annotation_file_path}")
+    
+def export_to_coco(image_path, boxes, phrases, output_dir, labels):
     image = cv2.imread(image_path)
     height, width, _ = image.shape
+
+    annotation_dir = os.path.join(output_dir, "annotations")
+    create_dir(annotation_dir)
 
     coco_output = {
         "info": {
@@ -133,31 +132,38 @@ def export_to_coco(image_path, labels, bboxes):
         "categories": [{"id": idx + 1, "name": label, "supercategory": "none"} for idx, label in enumerate(labels)]
     }
 
-    for idx, bbox in enumerate(bboxes):
-        x_min, y_min, x_max, y_max = bbox
-        width = x_max - x_min
-        height = y_max - y_min
+    annotation_id = len(os.listdir(annotation_dir)) + 1  # Obtener el ID siguiente
+    annotation_file_name = f"annotations_coco_{annotation_id}.json"
+    annotation_file_path = os.path.join(annotation_dir, annotation_file_name)
 
-        coco_output["annotations"].append({
-            "id": idx + 1,
-            "image_id": 1,
-            "category_id": idx + 1,
-            "bbox": [x_min, y_min, width, height],
-            "area": width * height,
-            "segmentation": [],
-            "iscrowd": 0
-        })
+    for box, phrase in zip(boxes, phrases):
+        class_id = labels.index(phrase) + 1 if phrase in labels else -1
+        if class_id != -1:
+            x_center, y_center, box_width, box_height = box
+            x_min = int((x_center - box_width / 2.0) * width)
+            y_min = int((y_center - box_height / 2.0) * height)
+            box_width = int(box_width * width)
+            box_height = int(box_height * height)
 
-    save_path = os.path.splitext(image_path)[0] + "_coco.json"
-    with open(save_path, "w") as f:
+            bbox = [x_min, y_min, box_width, box_height]
+
+            coco_output["annotations"].append({
+                "id": annotation_id,
+                "image_id": 1,
+                "category_id": class_id,
+                "bbox": bbox,
+                "area": bbox[2] * bbox[3],
+                "segmentation": [],
+                "iscrowd": 0
+            })
+
+            annotation_id += 1
+
+    with open(annotation_file_path, 'w') as f:
         json.dump(coco_output, f, indent=4)
-
-    print(f"Saved COCO annotation to {save_path}")
+    print(f"Anotaciones COCO guardadas en: {annotation_file_path}")
 
 def export_to_coco_segmentation(image_path, labels, bboxes, masks):
-    from datetime import datetime
-    import json
-
     image = cv2.imread(image_path)
     height, width, _ = image.shape
 
@@ -201,26 +207,45 @@ def export_to_coco_segmentation(image_path, labels, bboxes, masks):
         json.dump(coco_output, f, indent=4)
 
     print(f"COCO segmentation annotation saved to {output_path}")
-    
-def export_to_yolo(image_path, labels, bboxes):
+
+def export_to_yolo(image_path, boxes, phrases, output_dir, labels):
     image = cv2.imread(image_path)
     height, width, _ = image.shape
 
-    yolo_output = []
-    for bbox, label in zip(bboxes, labels):
-        x1, y1, x2, y2 = bbox
-        x_center = (x1 + x2) / 2 / width
-        y_center = (y1 + y2) / 2 / height
-        w = (x2 - x1) / width
-        h = (y2 - y1) / height
-        label_idx = labels.index(label)  # assuming label is in labels list
-        yolo_output.append(f"{label_idx} {x_center} {y_center} {w} {h}")
+    image_dir = os.path.join(output_dir, "images")
+    labels_dir = os.path.join(output_dir, "labels")
 
-    output_path = os.path.splitext(image_path)[0] + ".txt"
-    with open(output_path, "w") as f:
-        f.write("\n".join(yolo_output))
+    create_dir(image_dir)
+    create_dir(labels_dir)
 
-    print(f"YOLO annotation saved to {output_path}")
+    # Crear archivo classes.txt
+    classes_path = os.path.join(output_dir, "classes.txt")
+    with open(classes_path, "w") as f:
+        for label in labels:
+            f.write(f"{label}\n")
+    print(f"Saved classes to {classes_path}")
+
+
+    # Guardar etiquetas en formato YOLO
+    txt_id = get_next_id(output_dir, "annotated_image", ".txt")
+    label_file_name = f"annotated_image_{txt_id}.txt"
+    label_path = os.path.join(labels_dir, label_file_name)
+
+    yolo_annotations = []
+
+    for box, phrase in zip(boxes, phrases):
+        class_id = labels.index(phrase) if phrase in labels else -1
+        if class_id != -1:  
+            x_center, y_center, box_width, box_height = box
+            x_center = max(0, min(x_center, 1))  # Asegurar que esté en el rango [0, 1]
+            y_center = max(0, min(y_center, 1))
+            box_width = max(0, min(box_width, 1))
+            box_height = max(0, min(box_height, 1))
+            yolo_annotations.append(f"{class_id} {x_center} {y_center} {box_width} {box_height}")
+
+    with open(label_path, "w") as f:
+        f.write("\n".join(yolo_annotations))
+    print(f"Saved YOLO annotations to {label_path}")
 
 class ConfirmationDialog(QDialog):
     def __init__(self, image, parent=None):
@@ -250,7 +275,7 @@ class ConfirmationDialog(QDialog):
         button_layout = QHBoxLayout()
         accept_button = QPushButton("Aceptar", self)
         reject_button = QPushButton("Rechazar", self)
-
+        
         accept_button.clicked.connect(self.accept)
         reject_button.clicked.connect(self.reject)
 
@@ -269,6 +294,9 @@ class CameraApp(QWidget):
         self.setWindowTitle("Aplicación de Cámara")
         self.resize(800, 600)
 
+        self.progress_bar = QProgressBar(self)
+        self.progress_bar.setValue(0)
+
         self.camera_label = QLabel(self)
         self.camera_label.setAlignment(Qt.AlignCenter)
         self.camera_label.setFixedSize(640, 480)
@@ -283,7 +311,7 @@ class CameraApp(QWidget):
                                            "QPushButton:hover { background-color: #45a049; }")
         self.capture_button.clicked.connect(self.capture_and_label_image)
 
-        self.upload_button = QPushButton("Cargar Imagen", self)
+        self.upload_button = QPushButton("Cargar Imagenes", self)
         self.upload_button.setFont(QFont("Arial", 14))
         self.upload_button.setStyleSheet("QPushButton { background-color: #FF9800; color: white; border: none; padding: 10px; }"
                                          "QPushButton:hover { background-color: #FB8C00; }")
@@ -346,19 +374,15 @@ class CameraApp(QWidget):
         self.labels = []
 
         self.timer.start(30)  # Asegúrate de iniciar el temporizador aquí
-
+        '''
         sam_checkpoint = "./checkpoints/sam_vit_h_4b8939.pth"
         model_type = "vit_h"
         self.sam_model = sam_model_registry[model_type](checkpoint=sam_checkpoint)
         self.sam_predictor = SamPredictor(self.sam_model)
-        
+        '''
         self.change_camera(0)
         
-        #groundingdino_config_path = "./GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py"
-        #groundingdino_checkpoint = "./checkpoints/groundingdino_swint_ogc.pth"
-        # Cargar el modelo de groundingdino
-        #self.groundingdino_model = torch.load(groundingdino_checkpoint, map_location=torch.device('cpu'))
-        #self.groundingdino_model.eval()
+        self.groundingdino_model = load_model("./GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py", "./checkpoints/groundingdino_swint_ogc.pth")
     
     def populate_camera_list(self):
         index = 0
@@ -386,6 +410,41 @@ class CameraApp(QWidget):
             print("Camera not available!")
             self.camera_label.setText("Cámara no disponible")
 
+    def upload_and_label_image(self):
+        options = QFileDialog.Options()
+        file_paths, _ = QFileDialog.getOpenFileNames(self, "Cargar Imágenes", "", "Images (*.png *.jpg *.jpeg)", options=options)
+        if file_paths:
+            self.image_paths = file_paths
+            self.current_image_index = 0
+            input_text = QInputDialog.getText(self, "Etiquetas", "Introduce etiquetas separadas por comas:")
+            if input_text[1]:
+                self.labels = [label.strip() for label in input_text[0].split(",")]
+                QMessageBox.information(self, "Etiquetas", f"Etiquetas agregadas: {', '.join(self.labels)}")
+                self.progress_bar.setMaximum(len(self.image_paths))
+                self.progress_bar.setValue(0)
+                self.process_next_image()
+
+    def process_next_image(self):
+        if self.current_image_index < len(self.image_paths):
+            original_image_path = self.image_paths[self.current_image_index]
+            image_id = get_next_id(self.capture_dir, "captura", ".jpg")
+
+            # Renombrar la imagen cargada
+            new_image_path = os.path.join(self.capture_dir, f"captura_{image_id}.jpg")
+            shutil.copy(original_image_path, new_image_path)
+            
+            # Procesar la imagen renombrada
+            self.capture_and_label_image_from_path(new_image_path, image_id)
+            
+            self.current_image_index += 1
+            self.progress_bar.setValue(self.current_image_index)
+            if self.current_image_index < len(self.image_paths):
+                self.process_next_image()
+            else:
+                QMessageBox.information(self, "Completado", "Todas las imágenes han sido procesadas.")
+        else:
+            QMessageBox.information(self, "Error", "No hay imágenes para procesar.")
+
     def change_camera(self, index):
         print("Selected camera index:", index)
         if self.camera is not None:
@@ -409,17 +468,6 @@ class CameraApp(QWidget):
         scaled_pixmap = pixmap.scaled(self.camera_label.size(), Qt.KeepAspectRatio)
         self.camera_label.setPixmap(scaled_pixmap)
 
-    def upload_and_label_image(self):
-        options = QFileDialog.Options()
-        file_path, _ = QFileDialog.getOpenFileName(self, "Cargar Imagen", "", "Images (*.png *.jpg *.jpeg)", options=options)
-        if file_path:
-            image = cv2.imread(file_path)
-            self.display_image(image)
-            input_text = QInputDialog.getText(self, "Etiquetas", "Introduce etiquetas separadas por comas:")
-            if input_text[1]:
-                self.labels = [label.strip() for label in input_text[0].split(",")]
-                QMessageBox.information(self, "Etiquetas", f"Etiquetas agregadas: {', '.join(self.labels)}")
-
     def select_directory(self):
         options = QFileDialog.Options()
         dir_path = QFileDialog.getExistingDirectory(self, "Seleccionar Directorio", "", options=options)
@@ -428,10 +476,19 @@ class CameraApp(QWidget):
             QMessageBox.information(self, "Directorio Seleccionado", f"Directorio seleccionado: {self.capture_dir}")
 
     def add_labels(self):
-        input_text = QInputDialog.getText(self, "Etiquetas", "Introduce etiquetas separadas por comas:")
-        if input_text[1]:
-            self.labels = [label.strip() for label in input_text[0].split(",")]
-            QMessageBox.information(self, "Etiquetas", f"Etiquetas agregadas: {', '.join(self.labels)}")
+        input_text, ok_pressed = QInputDialog.getText(self, "Etiquetas", "Introduce etiquetas separadas por comas:")
+
+        if ok_pressed:
+            labels = [label.strip() for label in input_text.split(",")]
+            labels = [label for label in labels if label]  # Filtrar etiquetas vacías
+
+            if labels:
+                self.labels = labels
+                QMessageBox.information(self, "Etiquetas", f"Etiquetas agregadas: {', '.join(self.labels)}")
+            else:
+                QMessageBox.critical(self, "Error", "No se han proporcionado etiquetas válidas. Por favor, introduce etiquetas separadas por comas.")
+        else:
+            QMessageBox.critical(self, "Error", "Se ha cancelado la entrada de etiquetas. Por favor, introduce etiquetas separadas por comas.")
 
     def close_application(self):
         self.camera.release()
@@ -461,96 +518,194 @@ class CameraApp(QWidget):
 
         annotations_path = os.path.join(self.capture_dir, "annotations.json")
         with open(annotations_path, 'w') as f:
-            json.dump(output_data, f, default=int) 
-            
+            json.dump(output_data, f, default=int)     
+
     def capture_and_label_image(self):
         ret, frame = self.camera.read()
         if ret:
-            image_path = os.path.join(self.capture_dir, "captura.jpg")
+            # Obtener el siguiente ID para los archivos
+            image_id = get_next_id(self.capture_dir, "captura", ".jpg")
+        
+            image_path = os.path.join(self.capture_dir, f"captura_{image_id}.jpg")
             cv2.imwrite(image_path, frame)
 
-            # Segmentación con Segment Anything
-            input_point = np.array([[320, 240]])
-            input_label = np.array([1])
+            # Ejecutar GroundingDINO
+            TEXT_PROMPT = ", ".join(self.labels)
+            BOX_THRESHOLD = 0.35
+            TEXT_THRESHOLD = 0.25
+            image_source, image = load_image(image_path)
 
-            image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            self.sam_predictor.set_image(image_rgb)
-
-            masks, _, _ = self.sam_predictor.predict(
-                point_coords=input_point,
-                point_labels=input_label,
-                multimask_output=False
+            boxes, logits, phrases = predict(
+                model=self.groundingdino_model,
+                image=image,
+                caption=TEXT_PROMPT,
+                box_threshold=BOX_THRESHOLD,
+                text_threshold=TEXT_THRESHOLD,
+                device="cpu"
             )
 
-            masks_dir = os.path.join(self.capture_dir, "masks")
-            save_mask_pixels(masks, masks_dir)
+            annotated_frame = annotate(image_source=image_source, boxes=boxes, logits=logits, phrases=phrases)
+            annotated_image_path = os.path.join(self.capture_dir, f"annotated_image_{image_id}.jpg")
+            cv2.imwrite(annotated_image_path, annotated_frame)
 
-            masks_np = [mask[0].detach().cpu().numpy() if torch.is_tensor(mask) else mask for mask in masks]
-            masks_resized = [cv2.resize(mask.astype(np.uint8), (frame.shape[1], frame.shape[0])) for mask in masks_np]
-            save_mask_debug(masks_resized, self.capture_dir)
-
-            # Crear una imagen de objetos vacía
-            object_image = np.zeros_like(frame)
-
-            all_bboxes = []
-            
-            for idx, mask in enumerate(masks_resized):
-                color = self.get_color(idx)
-                object_image[mask > 0.5] = color
-
-                # Calcular las bounding boxes
-                mask_bboxes = mask_to_bboxes(mask)
-                print(f"Mask {idx} bboxes: {mask_bboxes}")
-                all_bboxes.extend(mask_bboxes)
-
-            print("Bounding boxes:", all_bboxes)
-            
-            # Dibujar las bounding boxes en la imagen de objetos
-            for bbox in all_bboxes:
-                x1, y1, x2, y2 = bbox
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
-            # Combinar la imagen de fondo (original) y la imagen de objetos
-            combined_image = cv2.addWeighted(frame, 0.7, object_image, 0.3, 0)
-
-            confirmation_dialog = ConfirmationDialog(combined_image, self)
+            confirmation_dialog = ConfirmationDialog(annotated_frame, self)
+        
             if confirmation_dialog.exec_() == QDialog.Accepted:
-                segmented_image_path = os.path.join(self.capture_dir, "captura_segmentada.jpg")
-                cv2.imwrite(segmented_image_path, combined_image)
-
-                labels_path = os.path.join(self.capture_dir, "labels.json")
-                with open(labels_path, 'w') as f:
+                labels_path = os.path.join(self.capture_dir, f"labels_{image_id}.json")
+                with open(labels_path, "w") as f:
                     json.dump(self.labels, f)
-
-                self.save_annotations(all_bboxes, masks_resized)
-
+            
                 export_format = self.format_combo.currentText()
+            
                 if export_format == "Pascal-VOC":
-                    export_to_pascal_voc(segmented_image_path, self.labels, all_bboxes)
+                    # Crear la estructura de directorios para Pascal VOC
+                    pascal_voc_dir = os.path.join(self.capture_dir, "exportation_in_pascalVOC")
+                    annotations_dir = os.path.join(pascal_voc_dir, "Annotations")
+                    images_dir = os.path.join(pascal_voc_dir, "images")
+
+                    create_dir(pascal_voc_dir)
+                    create_dir(annotations_dir)
+                    create_dir(images_dir)
+
+                    # Copiar la imagen original a la carpeta "images"
+                    shutil.copy(image_path, os.path.join(images_dir, os.path.basename(image_path)))
+                    print(f"Imagen copiada a: {images_dir}")
+
+                    
+                    export_to_pascal_voc_annotations(image_path, boxes, phrases, annotations_dir, self.labels) 
+                    QMessageBox.information(self, "Éxito", f"Imagen capturada y etiquetada con éxito en formato Pascal-VOC.\nDirectorio: {self.capture_dir}")
+
                 elif export_format == "COCO":
-                    export_to_coco(segmented_image_path, self.labels, all_bboxes)
-                elif export_format == "COCO with Segmentation":
-                    if masks is None:
-                        print("Masks are required for COCO-Segmentation format.")
-                    else:
-                        export_to_coco_segmentation(segmented_image_path, self.labels, all_bboxes, masks_resized)
+                    # Crear la estructura de directorios para COCO
+                    coco_dir = os.path.join(self.capture_dir, "exportation_in_COCO")
+                    images_dir = os.path.join(coco_dir, "images")
+                    annotations_dir = os.path.join(coco_dir, "annotations")
+
+                    create_dir(coco_dir)
+                    create_dir(images_dir)
+                    create_dir(annotations_dir)
+
+                    # Copiar la imagen original a la carpeta "images"
+                    shutil.copy(image_path, os.path.join(images_dir, os.path.basename(image_path)))
+                    print(f"Imagen copiada a: {images_dir}")
+
+                    export_to_coco(image_path, boxes, phrases, coco_dir, self.labels)
+                    QMessageBox.information(self, "Éxito", f"Imagen capturada y etiquetada con éxito en formato COCO.\nDirectorio: {self.capture_dir}")
+            
                 elif export_format == "YOLO":
-                    export_to_yolo(segmented_image_path, self.labels, all_bboxes)
-                else:
-                    QMessageBox.warning(self, "Error", "Unsupported format selected.")
+                    # Crear la estructura de directorios para YOLO
+                    yolo_dir = os.path.join(self.capture_dir, "exportation_in_YOLO")
+                    images_dir = os.path.join(yolo_dir, "images")
+                    labels_dir = os.path.join(yolo_dir, "labels")
 
-                self.display_image(frame)
-                QMessageBox.information(self, "Captura y Etiquetado", f"¡La imagen segmentada se guardó en: {self.capture_dir}\nEtiquetas guardadas en labels.json")
+                    create_dir(yolo_dir)
+                    create_dir(images_dir)
+                    create_dir(labels_dir)
+
+                    # Copiar la imagen original a la carpeta "images"
+                    shutil.copy(image_path, os.path.join(images_dir, os.path.basename(image_path)))
+                    print(f"Imagen copiada a: {images_dir}")
+
+                    
+                    export_to_yolo(image_path, boxes, phrases, yolo_dir, self.labels)
+                    QMessageBox.information(self, "Éxito", f"Imagen capturada y etiquetada con éxito en formato YOLO.\nDirectorio: {self.capture_dir}")
+
             else:
-                # Eliminar imágenes temporales
-                if os.path.exists(image_path):
-                    os.remove(image_path)
-                for mask_path in os.listdir(masks_dir):
-                    os.remove(os.path.join(masks_dir, mask_path))
-                QMessageBox.information(self, "Captura Rechazada", "La captura segmentada fue rechazada.")
-        else:
-            QMessageBox.warning(self, "Error", "¡No se pudo capturar la imagen!")
+                print("Captura y etiquetado cancelados por el usuario.")
+                QMessageBox.information(self, "Cancelado", "Captura y etiquetado cancelados por el usuario.")
+            
+            print("BOXES: ", boxes)
 
+        else:
+            QMessageBox.critical(self, "Error", "No se pudo capturar la imagen.")
+    
+    #capture_and_label 2.0 
+    def capture_and_label_image_from_path(self, image_path, image_id):
+        # Ejecutar GroundingDINO
+        TEXT_PROMPT = ", ".join(self.labels)
+        BOX_THRESHOLD = 0.35
+        TEXT_THRESHOLD = 0.25
+        image_source, image = load_image(image_path)
+
+        boxes, logits, phrases = predict(
+            model=self.groundingdino_model,
+            image=image,
+            caption=TEXT_PROMPT,
+            box_threshold=BOX_THRESHOLD,
+            text_threshold=TEXT_THRESHOLD,
+            device="cpu"
+        )
+
+        annotated_frame = annotate(image_source=image_source, boxes=boxes, logits=logits, phrases=phrases)
+        annotated_image_path = os.path.join(self.capture_dir, f"annotated_image_{image_id}.jpg")
+        cv2.imwrite(annotated_image_path, annotated_frame)
+
+        confirmation_dialog = ConfirmationDialog(annotated_frame, self)
+        
+        if confirmation_dialog.exec_() == QDialog.Accepted:
+            labels_path = os.path.join(self.capture_dir, f"labels_{image_id}.json")
+            with open(labels_path, "w") as f:
+                json.dump(self.labels, f)
+            
+            export_format = self.format_combo.currentText()
+            
+            if export_format == "Pascal-VOC":
+                # Crear la estructura de directorios para Pascal VOC
+                pascal_voc_dir = os.path.join(self.capture_dir, "exportation_in_pascalVOC")
+                annotations_dir = os.path.join(pascal_voc_dir, "Annotations")
+                images_dir = os.path.join(pascal_voc_dir, "images")
+
+                create_dir(pascal_voc_dir)
+                create_dir(annotations_dir)
+                create_dir(images_dir)
+
+                # Copiar la imagen original a la carpeta "images"
+                shutil.copy(image_path, os.path.join(images_dir, os.path.basename(image_path)))
+                print(f"Imagen copiada a: {images_dir}")
+
+                export_to_pascal_voc_annotations(image_path, boxes, phrases, annotations_dir, self.labels)
+                QMessageBox.information(self, "Éxito", f"Imagen capturada y etiquetada con éxito en formato Pascal-VOC.\nDirectorio: {self.capture_dir}")
+
+            elif export_format == "COCO":
+                # Crear la estructura de directorios para COCO
+                coco_dir = os.path.join(self.capture_dir, "exportation_in_COCO")
+                images_dir = os.path.join(coco_dir, "images")
+                annotations_dir = os.path.join(coco_dir, "annotations")
+
+                create_dir(coco_dir)
+                create_dir(images_dir)
+                create_dir(annotations_dir)
+
+                # Copiar la imagen original a la carpeta "images"
+                shutil.copy(image_path, os.path.join(images_dir, os.path.basename(image_path)))
+                print(f"Imagen copiada a: {images_dir}")
+
+                export_to_coco(image_path, boxes, phrases, coco_dir, self.labels)
+                QMessageBox.information(self, "Éxito", f"Imagen capturada y etiquetada con éxito en formato COCO.\nDirectorio: {self.capture_dir}")
+            
+            elif export_format == "YOLO":
+                # Crear la estructura de directorios para YOLO
+                yolo_dir = os.path.join(self.capture_dir, "exportation_in_YOLO")
+                images_dir = os.path.join(yolo_dir, "images")
+                labels_dir = os.path.join(yolo_dir, "labels")
+
+                create_dir(yolo_dir)
+                create_dir(images_dir)
+                create_dir(labels_dir)
+
+                # Copiar la imagen original a la carpeta "images"
+                shutil.copy(image_path, os.path.join(images_dir, os.path.basename(image_path)))
+                print(f"Imagen copiada a: {images_dir}")
+
+                export_to_yolo(image_path, boxes, phrases, yolo_dir, self.labels)
+                QMessageBox.information(self, "Éxito", f"Imagen capturada y etiquetada con éxito en formato YOLO.\nDirectorio: {self.capture_dir}")
+
+        else:
+            print("Captura y etiquetado cancelados por el usuario.")
+            QMessageBox.information(self, "Cancelado", "Captura y etiquetado cancelados por el usuario.")
+        
+        print("BOXES: ", boxes)
+            
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = CameraApp()
